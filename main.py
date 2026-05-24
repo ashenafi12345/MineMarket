@@ -12,6 +12,7 @@ app = FastAPI()
 # CORS
 origins = [
     "http://localhost:3000",
+    "https://mine-market-tghv.vercel.app/"
 ]
 
 app.add_middleware(
