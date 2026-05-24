@@ -9,10 +9,9 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
-# CORS
 origins = [
     "http://localhost:3000",
-    "https://mine-market-tghv.vercel.app/"
+    "https://mine-market-tghv.vercel.app"
 ]
 
 app.add_middleware(
