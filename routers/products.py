@@ -10,7 +10,8 @@ from fastapi import (
     UploadFile,
     File,
     Form,
-    HTTPException
+    HTTPException,
+    Query
 )
 
 from sqlalchemy.orm import Session, joinedload
@@ -41,76 +42,6 @@ user_dependency = Annotated[Users, Depends(get_current_user)]
 
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-
-# =========================================
-# CREATE PRODUCT
-# =========================================
-@router.post("/create", response_model=ProductResponse)
-async def create_product(
-    db: db_dependency,
-    current_user: user_dependency,
-
-    category: MineralCategory = Form(...),
-    title: str = Form(...),
-    mineral_type: str = Form(...),
-    description: Optional[str] = Form(None),
-    price: float = Form(...),
-    quantity: float = Form(...),
-    location: str = Form(...),
-
-    images: List[UploadFile] = File(...)
-):
-
-    product = Product(
-        category=category,
-        title=title,
-        mineral_type=mineral_type,
-        description=description,
-        price=price,
-        quantity=quantity,
-        location=location,
-        owner_id=current_user.id
-    )
-
-    db.add(product)
-    db.commit()
-    db.refresh(product)
-
-    for image in images:
-        if not image.filename:
-            continue
-
-        ext = image.filename.split(".")[-1]
-        filename = f"{uuid.uuid4()}.{ext}"
-
-        path = os.path.join(UPLOAD_DIR, filename)
-
-        with open(path, "wb") as buffer:
-            shutil.copyfileobj(image.file, buffer)
-
-        db.add(ProductImage(
-            image_url=f"/uploads/{filename}",
-            product_id=product.id
-        ))
-
-    db.commit()
-    db.refresh(product)
-
-    return product
-
-
-
-
-# =========================================
-# GET ALL PRODUCTS
-# =========================================
-@router.get("", response_model=List[ProductResponse])
-def get_products(db: db_dependency):
-
-    return db.query(Product).options(
-        joinedload(Product.images)
-    ).all()
 
 
 # =========================================
@@ -151,6 +82,100 @@ def similarity_score(s1: str, s2: str) -> float:
 
 
 # =========================================
+# CREATE PRODUCT
+# =========================================
+@router.post("/create", response_model=ProductResponse)
+async def create_product(
+    db: db_dependency,
+    current_user: user_dependency,
+
+    category: MineralCategory = Form(...),
+    title: str = Form(...),
+    mineral_type: str = Form(...),
+    description: Optional[str] = Form(None),
+    price: float = Form(...),
+    quantity: float = Form(...),
+    location: str = Form(...),
+
+    images: List[UploadFile] = File(...)
+):
+    # Validate at least one image
+    if not images or len(images) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one product image is required"
+        )
+    
+    # Create product
+    product = Product(
+        category=category,
+        title=title,
+        mineral_type=mineral_type,
+        description=description,
+        price=price,
+        quantity=quantity,
+        location=location,
+        owner_id=current_user.id
+    )
+
+    db.add(product)
+    db.commit()
+    db.refresh(product)
+
+    # Save images
+    for image in images:
+        if not image.filename:
+            continue
+
+        ext = image.filename.split(".")[-1].lower()
+        
+        # Validate image extension
+        if ext not in ["jpg", "jpeg", "png", "webp", "gif"]:
+            continue
+            
+        filename = f"{uuid.uuid4()}.{ext}"
+        path = os.path.join(UPLOAD_DIR, filename)
+
+        with open(path, "wb") as buffer:
+            shutil.copyfileobj(image.file, buffer)
+
+        db.add(ProductImage(
+            image_url=f"/uploads/{filename}",
+            product_id=product.id
+        ))
+
+    db.commit()
+    db.refresh(product)
+
+    # Load images before returning
+    product = db.query(Product).options(
+        joinedload(Product.images)
+    ).filter(Product.id == product.id).first()
+
+    return product
+
+
+# =========================================
+# GET ALL PRODUCTS (with pagination)
+# =========================================
+@router.get("", response_model=List[ProductResponse])
+def get_products(
+    db: db_dependency,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100)
+):
+    offset = (page - 1) * limit
+    
+    products = db.query(Product).options(
+        joinedload(Product.images)
+    ).order_by(
+        desc(Product.created_at)
+    ).offset(offset).limit(limit).all()
+    
+    return products
+
+
+# =========================================
 # SEARCH + FILTER + SORT + PAGINATION
 # =========================================
 @router.get("/search", response_model=List[ProductResponse])
@@ -164,22 +189,21 @@ def search_products(
     category: Optional[MineralCategory] = None,
     mineral_type: Optional[str] = None,
     location: Optional[str] = None,
+    
+    # PRICE RANGE
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
 
     # SORT
-    sort_by: Optional[str] = "created_at",
-    sort_order: Optional[str] = "desc",
+    sort_by: Optional[str] = Query("created_at", description="created_at, price, title, quantity"),
+    sort_order: Optional[str] = Query("desc", description="asc or desc"),
 
     # PAGINATION
-    page: int = 1,
-    limit: int = 10,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
 ):
-
-    query = db.query(Product).options(
-        joinedload(Product.images)
-    )
-
     # =========================================
-    # 🔥 SMART SEARCH FOR SQLITE
+    # SMART SEARCH FOR SQLITE
     # =========================================
     if search:
         # First, get all products with basic filters
@@ -191,6 +215,10 @@ def search_products(
             base_query = base_query.filter(Product.mineral_type == mineral_type)
         if location:
             base_query = base_query.filter(Product.location.ilike(f"%{location}%"))
+        if min_price is not None:
+            base_query = base_query.filter(Product.price >= min_price)
+        if max_price is not None:
+            base_query = base_query.filter(Product.price <= max_price)
             
         all_products = base_query.all()
         
@@ -203,17 +231,19 @@ def search_products(
             title_score = similarity_score(product.title, search_lower)
             desc_score = similarity_score(product.description or "", search_lower)
             mineral_score = similarity_score(product.mineral_type, search_lower)
+            location_score = similarity_score(product.location, search_lower)
             
             # Use best score from any field
-            best_score = max(title_score, desc_score, mineral_score)
+            best_score = max(title_score, desc_score, mineral_score, location_score)
             
-            # Also check for partial matches (like SQL ILIKE)
+            # Also check for partial matches (boost)
             if (search_lower in product.title.lower() or 
                 search_lower in (product.description or "").lower() or
-                search_lower in product.mineral_type.lower()):
-                best_score = max(best_score, 0.5)  # Boost partial matches
+                search_lower in product.mineral_type.lower() or
+                search_lower in product.location.lower()):
+                best_score = max(best_score, 0.6)  # Boost partial matches
             
-            if best_score > 0.3:  # Only keep products with >30% similarity
+            if best_score > 0.25:  # Only keep products with >25% similarity
                 scored_products.append((product, best_score))
         
         # Sort by similarity score
@@ -226,13 +256,11 @@ def search_products(
         offset = (page - 1) * limit
         paginated_products = filtered_products[offset:offset + limit]
         
-        # Load images for these products (use a different variable name)
+        # Load images for these products
         product_ids = [p.id for p in paginated_products]
         if product_ids:
-            # Import joinedload locally to avoid confusion
-            from sqlalchemy.orm import joinedload as joinedload_local
             result = db.query(Product).options(
-                joinedload_local(Product.images)
+                joinedload(Product.images)
             ).filter(Product.id.in_(product_ids)).all()
             
             # Preserve order
@@ -241,7 +269,11 @@ def search_products(
         
         return []
     
-    # If no search term, use regular filtering
+    # =========================================
+    # IF NO SEARCH TERM, USE REGULAR FILTERING
+    # =========================================
+    query = db.query(Product).options(joinedload(Product.images))
+    
     if category:
         query = query.filter(Product.category == category)
 
@@ -250,35 +282,100 @@ def search_products(
 
     if location:
         query = query.filter(Product.location.ilike(f"%{location}%"))
+        
+    if min_price is not None:
+        query = query.filter(Product.price >= min_price)
+        
+    if max_price is not None:
+        query = query.filter(Product.price <= max_price)
 
     # SORTING
-    sort_column = getattr(Product, sort_by, Product.created_at)
-
-    if sort_order == "asc":
-        query = query.order_by(asc(sort_column))
+    if sort_by and hasattr(Product, sort_by):
+        sort_column = getattr(Product, sort_by)
+        if sort_order == "asc":
+            query = query.order_by(asc(sort_column))
+        else:
+            query = query.order_by(desc(sort_column))
     else:
-        query = query.order_by(desc(sort_column))
+        # Default sort by created_at desc
+        query = query.order_by(desc(Product.created_at))
 
     # PAGINATION
     offset = (page - 1) * limit
-
+    
     return query.offset(offset).limit(limit).all()
+
+
+# =========================================
+# GET SEARCH SUGGESTIONS (AUTOCOMPLETE)
+# =========================================
+@router.get("/suggestions")
+def get_search_suggestions(
+    partial: str,
+    db: db_dependency,
+    limit: int = Query(5, ge=1, le=20)
+):
+    """Get autocomplete suggestions based on partial input"""
+    
+    all_titles = db.query(Product.title).distinct().all()
+    
+    suggestions = []
+    partial_lower = partial.lower()
+    
+    for (title,) in all_titles:
+        score = similarity_score(title, partial_lower)
+        if score > 0.2:
+            suggestions.append({"title": title, "score": float(score)})
+    
+    suggestions.sort(key=lambda x: x["score"], reverse=True)
+    
+    return suggestions[:limit]
 
 
 # =========================================
 # SINGLE PRODUCT
 # =========================================
 @router.get("/{product_id}", response_model=ProductResponse)
-def get_single_product(product_id: str, db: db_dependency):
-
+def get_single_product(
+    product_id: str, 
+    db: db_dependency
+):
     product = db.query(Product).options(
         joinedload(Product.images)
     ).filter(Product.id == product_id).first()
 
     if not product:
-        raise HTTPException(404, "Product not found")
+        raise HTTPException(status_code=404, detail="Product not found")
 
     return product
+
+
+# =========================================
+# GET PRODUCTS BY USER
+# =========================================
+@router.get("/user/{user_id}", response_model=List[ProductResponse])
+def get_user_products(
+    user_id: str,
+    db: db_dependency,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100)
+):
+    # Check if user exists
+    user = db.query(Users).filter(Users.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    offset = (page - 1) * limit
+    
+    products = db.query(Product).options(
+        joinedload(Product.images)
+    ).filter(
+        Product.owner_id == user_id
+    ).order_by(
+        desc(Product.created_at)
+    ).offset(offset).limit(limit).all()
+    
+    return products
 
 
 # =========================================
@@ -290,25 +387,25 @@ async def edit_product(
     db: db_dependency,
     current_user: user_dependency,
 
-    category: MineralCategory = Form(None),
-    title: str = Form(None),
-    mineral_type: str = Form(None),
-    description: str = Form(None),
-    price: float = Form(None),
-    quantity: float = Form(None),
-    location: str = Form(None),
+    category: Optional[MineralCategory] = Form(None),
+    title: Optional[str] = Form(None),
+    mineral_type: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
+    price: Optional[float] = Form(None),
+    quantity: Optional[float] = Form(None),
+    location: Optional[str] = Form(None),
 
-    images: List[UploadFile] = File(None)
+    images: Optional[List[UploadFile]] = File(None)
 ):
-
     product = db.query(Product).filter(
         Product.id == product_id,
         Product.owner_id == current_user.id
     ).first()
 
     if not product:
-        raise HTTPException(404, "Product not found")
+        raise HTTPException(status_code=404, detail="Product not found or you don't own it")
 
+    # Update fields if provided
     if category is not None:
         product.category = category
 
@@ -330,21 +427,30 @@ async def edit_product(
     if location is not None:
         product.location = location
 
-    # UPDATE IMAGES
-    if images:
-
+    # UPDATE IMAGES (if new images provided)
+    if images and len(images) > 0:
+        # Delete old images
         for old in product.images:
-            path = old.image_url.replace("/uploads/", "uploads/")
-            if os.path.exists(path):
-                os.remove(path)
+            old_path = old.image_url.replace("/uploads/", "uploads/")
+            if os.path.exists(old_path):
+                try:
+                    os.remove(old_path)
+                except:
+                    pass
             db.delete(old)
 
         db.commit()
 
+        # Add new images
         for image in images:
-            ext = image.filename.split(".")[-1]
+            if not image.filename:
+                continue
+                
+            ext = image.filename.split(".")[-1].lower()
+            if ext not in ["jpg", "jpeg", "png", "webp", "gif"]:
+                continue
+                
             filename = f"{uuid.uuid4()}.{ext}"
-
             path = os.path.join(UPLOAD_DIR, filename)
 
             with open(path, "wb") as buffer:
@@ -357,6 +463,11 @@ async def edit_product(
 
     db.commit()
     db.refresh(product)
+    
+    # Load images before returning
+    product = db.query(Product).options(
+        joinedload(Product.images)
+    ).filter(Product.id == product.id).first()
 
     return product
 
@@ -370,47 +481,45 @@ async def delete_product(
     db: db_dependency,
     current_user: user_dependency
 ):
-
     product = db.query(Product).filter(
         Product.id == product_id,
         Product.owner_id == current_user.id
     ).first()
 
     if not product:
-        raise HTTPException(404, "Product not found")
+        raise HTTPException(status_code=404, detail="Product not found or you don't own it")
 
+    # Delete all associated images from filesystem
     for img in product.images:
-        path = img.image_url.replace("/uploads/", "uploads/")
-        if os.path.exists(path):
-            os.remove(path)
+        img_path = img.image_url.replace("/uploads/", "uploads/")
+        if os.path.exists(img_path):
+            try:
+                os.remove(img_path)
+            except:
+                pass
 
+    # Delete product (images will be deleted automatically due to cascade)
     db.delete(product)
     db.commit()
 
-    return {"message": "Product deleted"}
+    return {"message": "Product deleted successfully"}
 
 
 # =========================================
-# 🔥 EXTRA: GET SEARCH SUGGESTIONS
+# GET PRODUCT STATISTICS
 # =========================================
-@router.get("/suggestions/{partial}")
-def get_search_suggestions(
-    partial: str,
-    db: db_dependency,
-    limit: int = 5
-):
-    """Get autocomplete suggestions based on partial input"""
+@router.get("/stats/count")
+def get_product_stats(db: db_dependency):
+    """Get product statistics"""
     
-    all_titles = db.query(Product.title).distinct().all()
+    total_products = db.query(func.count(Product.id)).scalar()
     
-    suggestions = []
-    partial_lower = partial.lower()
+    stats_by_category = db.query(
+        Product.category,
+        func.count(Product.id)
+    ).group_by(Product.category).all()
     
-    for (title,) in all_titles:
-        score = similarity_score(title, partial_lower)
-        if score > 0.2:
-            suggestions.append({"title": title, "score": float(score)})
-    
-    suggestions.sort(key=lambda x: x["score"], reverse=True)
-    
-    return suggestions[:limit]
+    return {
+        "total_products": total_products,
+        "by_category": [{"category": cat, "count": count} for cat, count in stats_by_category]
+    }
