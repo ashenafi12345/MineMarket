@@ -86,11 +86,65 @@ class CreateUserRequest(BaseModel):
 
 
 # =========================================
-# LOGIN TOKEN SCHEMA
+# LOGIN TOKEN SCHEMA (UPDATED)
 # =========================================
 class Token(BaseModel):
     access_token: str
     token_type: str
+    expires_in: int  # Seconds until token expires
+
+
+# =========================================
+# REFRESH TOKEN SCHEMAS (NEW)
+# =========================================
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+
+class RefreshTokenResponse(BaseModel):
+    access_token: str
+    token_type: str
+    expires_in: int
+
+
+# =========================================
+# LOGOUT SCHEMAS (NEW)
+# =========================================
+class LogoutResponse(BaseModel):
+    message: str
+    revoked_count: int
+
+
+# =========================================
+# SESSION MANAGEMENT SCHEMAS (NEW)
+# =========================================
+class SessionInfo(BaseModel):
+    id: str
+    device_info: Optional[str]
+    ip_address: Optional[str]
+    created_at: datetime
+    last_used_at: Optional[datetime]
+    expires_at: datetime
+    is_current: bool = False
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SessionsListResponse(BaseModel):
+    sessions: List[SessionInfo]
+    total: int
+
+
+# =========================================
+# CHANGE PASSWORD SCHEMA (NEW)
+# =========================================
+class ChangePasswordRequest(BaseModel):
+    old_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=8)
+
+
+class ChangePasswordResponse(BaseModel):
+    message: str
 
 
 # =========================================
@@ -138,7 +192,6 @@ class UserProfileResponse(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
-
 
 
 class UserOut(BaseModel):
@@ -191,9 +244,9 @@ class CommentResponse(BaseModel):
         from_attributes = True
 
 
-
-
-
+# =========================================
+# CHAT SCHEMAS
+# =========================================
 
 class MessageType(str, Enum):
     TEXT = "text"
@@ -288,5 +341,7 @@ class UnreadCountResponse(BaseModel):
     conversations_with_unread: Dict[str, int]
 
 
-# Update forward references
+# =========================================
+# UPDATE FORWARD REFERENCES
+# =========================================
 MessageResponse.model_rebuild()

@@ -146,6 +146,15 @@ class Users(Base):
         cascade="all, delete-orphan"
     )
 
+    # =========================================
+    # REFRESH TOKEN RELATIONSHIP
+    # =========================================
+    refresh_tokens = relationship(
+        "RefreshToken",
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
+
 
 # =========================================
 # PRODUCT MODEL
@@ -176,7 +185,7 @@ class Product(Base):
         String,
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
-        index=True  # Added index for performance
+        index=True
     )
 
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
@@ -219,7 +228,7 @@ class ProductImage(Base):
         String,
         ForeignKey("products.id", ondelete="CASCADE"),
         nullable=False,
-        index=True  # Added index for performance
+        index=True
     )
 
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -247,14 +256,14 @@ class Favorite(Base):
         String,
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
-        index=True  # Added index for performance
+        index=True
     )
 
     product_id = Column(
         String,
         ForeignKey("products.id", ondelete="CASCADE"),
         nullable=False,
-        index=True  # Added index for performance
+        index=True
     )
 
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -280,14 +289,14 @@ class Comment(Base):
         String,
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
-        index=True  # Added index for performance
+        index=True
     )
 
     product_id = Column(
         String,
         ForeignKey("products.id", ondelete="CASCADE"),
         nullable=False,
-        index=True  # Added index for performance
+        index=True
     )
 
     text = Column(Text, nullable=False)
@@ -300,7 +309,7 @@ class Comment(Base):
 
 
 # =========================================
-# CONVERSATION MODEL (CHAT) - FIXED with UNIQUE CONSTRAINT
+# CONVERSATION MODEL (CHAT)
 # =========================================
 class Conversation(Base):
     __tablename__ = "conversations"
@@ -345,7 +354,6 @@ class Conversation(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     
     # CRITICAL FIX: Add unique constraint to prevent duplicate conversations
-    # This ensures database-level protection against race conditions
     __table_args__ = (
         UniqueConstraint(
             "participant1_id",
@@ -414,11 +422,11 @@ class Message(Base):
     content = Column(Text, nullable=False)
     
     # Message type for future multimedia support
-    message_type = Column(String, default="text")  # text, image, audio, video, file, location
+    message_type = Column(String, default="text")
     
     # Attachment support
     attachment_url = Column(String, nullable=True)
-    attachment_metadata = Column(Text, nullable=True)  # JSON string for additional data
+    attachment_metadata = Column(Text, nullable=True)
     
     # Read status
     is_read = Column(Boolean, default=False, index=True)
@@ -427,7 +435,7 @@ class Message(Base):
     # Edit support
     is_edited = Column(Boolean, default=False)
     edited_at = Column(DateTime, nullable=True)
-    edit_history = Column(Text, nullable=True)  # JSON string of previous versions
+    edit_history = Column(Text, nullable=True)
     
     # Soft delete
     is_deleted = Column(Boolean, default=False, index=True)
@@ -438,7 +446,7 @@ class Message(Base):
     reply_to_id = Column(String, ForeignKey("messages.id"), nullable=True, index=True)
     
     # Reactions (JSON)
-    reactions = Column(Text, nullable=True)  # {"👍": ["user1", "user2"], "❤️": ["user3"]}
+    reactions = Column(Text, nullable=True)
     
     # Timestamps
     created_at = Column(DateTime, server_default=func.now(), index=True)
@@ -456,7 +464,7 @@ class Message(Base):
     )
     
     # =========================================
-    # HELPER METHODS WITH SAFE JSON PARSING
+    # HELPER METHODS
     # =========================================
     
     def soft_delete(self, user_id: str):
@@ -468,7 +476,6 @@ class Message(Base):
     def mark_as_edited(self, new_content: str):
         """Mark message as edited with history"""
         try:
-            # Safe JSON parsing for edit history
             history = []
             if self.edit_history:
                 try:
@@ -483,7 +490,6 @@ class Message(Base):
                 "edited_at": datetime.utcnow().isoformat()
             })
             
-            # Keep only last 10 edits
             if len(history) > 10:
                 history = history[-10:]
             
@@ -492,8 +498,7 @@ class Message(Base):
             self.is_edited = True
             self.edited_at = datetime.utcnow()
             
-        except Exception as e:
-            # Fallback - at least mark as edited without history
+        except Exception:
             self.content = new_content
             self.is_edited = True
             self.edited_at = datetime.utcnow()
@@ -501,7 +506,6 @@ class Message(Base):
     def add_reaction(self, reaction: str, user_id: str):
         """Add reaction to message"""
         try:
-            # Safe JSON parsing for reactions
             reactions = {}
             if self.reactions:
                 try:
@@ -519,14 +523,12 @@ class Message(Base):
             
             self.reactions = json.dumps(reactions)
             
-        except Exception as e:
-            # If reaction fails, just ignore
+        except Exception:
             pass
     
     def remove_reaction(self, reaction: str, user_id: str):
         """Remove reaction from message"""
         try:
-            # Safe JSON parsing for reactions
             reactions = {}
             if self.reactions:
                 try:
@@ -543,8 +545,7 @@ class Message(Base):
             
             self.reactions = json.dumps(reactions)
             
-        except Exception as e:
-            # If removal fails, just ignore
+        except Exception:
             pass
     
     def get_reactions(self) -> dict:
@@ -568,3 +569,69 @@ class Message(Base):
         except (json.JSONDecodeError, TypeError):
             pass
         return []
+
+
+# =========================================
+# REFRESH TOKEN MODEL
+# =========================================
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+    
+    id = Column(
+        String,
+        primary_key=True,
+        default=lambda: str(uuid.uuid4())
+    )
+    
+    user_id = Column(
+        String,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True
+    )
+    
+    # Hashed refresh token (never store plain text)
+    token_hash = Column(
+        String,
+        nullable=False,
+        unique=True,
+        index=True
+    )
+    
+    # Device information for session management
+    device_info = Column(String, nullable=True)
+    ip_address = Column(String, nullable=True)
+    
+    # Expiry and status
+    expires_at = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    is_revoked = Column(Boolean, default=False, index=True)
+    
+    # Track last usage for audit
+    last_used_at = Column(DateTime, nullable=True)
+    
+    # Relationship back to user
+    user = relationship("Users", back_populates="refresh_tokens")
+    
+    # Composite indexes for efficient queries
+    __table_args__ = (
+        Index("idx_refresh_token_user_revoked", "user_id", "is_revoked"),
+        Index("idx_refresh_token_expires_revoked", "expires_at", "is_revoked"),
+        Index("idx_refresh_token_hash_lookup", "token_hash"),
+    )
+    
+    def is_expired(self) -> bool:
+        """Check if refresh token has expired"""
+        return datetime.utcnow() > self.expires_at
+    
+    def is_valid(self) -> bool:
+        """Check if token is valid (not expired and not revoked)"""
+        return not self.is_revoked and not self.is_expired()
+    
+    def mark_as_used(self):
+        """Update last_used_at timestamp"""
+        self.last_used_at = datetime.utcnow()
+    
+    def revoke(self):
+        """Revoke this refresh token"""
+        self.is_revoked = True
