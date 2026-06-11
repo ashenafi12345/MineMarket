@@ -1,8 +1,8 @@
 import os
 
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from database import Base, engine
 from routers import auth, chat, comments, favorites, products, users
@@ -26,7 +26,7 @@ app = FastAPI(title="MineMarket API")
 origins = [
     "http://localhost:3000",
     "https://mine-market-tghv.vercel.app",
-    "https://mine-market.netlify.app/",
+    "https://mine-market.netlify.app",
 ]
 
 app.add_middleware(
@@ -36,6 +36,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# =========================================
+# HEALTH CHECK
+# =========================================
+@app.get("/")
+def health_check():
+    return {"message": "MineMarket API is running"}
 
 
 # =========================================
@@ -49,17 +57,16 @@ app.include_router(comments.router)
 app.include_router(chat.router)
 
 
-
 # =========================================
 # STATIC FILES (UPLOADS)
 # =========================================
 UPLOAD_DIR = "uploads"
 
-# IMPORTANT: ensure folder exists
+# Ensure uploads directory exists
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 app.mount(
     "/uploads",
     StaticFiles(directory=UPLOAD_DIR),
-    name="uploads"
+    name="uploads",
 )
