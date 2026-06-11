@@ -25,8 +25,8 @@ app = FastAPI(title="MineMarket API")
 # =========================================
 origins = [
     "http://localhost:3000",
-    "https://mine-market-tghv.vercel.app"
-    "https://mine-market.netlify.app/"
+    "https://mine-market-tghv.vercel.app",
+    "https://mine-market.netlify.app/",
 ]
 
 app.add_middleware(
